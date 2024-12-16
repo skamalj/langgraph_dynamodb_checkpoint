@@ -1,7 +1,7 @@
 # @! include=redis.py convert all references of redis to dynamodb. provider=openai
 
-from contextlib import asynccontextmanager, contextmanager
-from typing import Any, AsyncGenerator, AsyncIterator, Iterator, List, Optional, Tuple
+from contextlib import  contextmanager
+from typing import Any, Iterator, List, Optional, Tuple
 
 from langchain_core.runnables import RunnableConfig
 
@@ -9,6 +9,7 @@ from langgraph.checkpoint.base import WRITES_IDX_MAP, BaseCheckpointSaver, Chann
 from langgraph.checkpoint.serde.base import SerializerProtocol
 import boto3
 from boto3.dynamodb.conditions import Key
+from botocore.exceptions import ClientError
 
 DYNAMODB_KEY_SEPARATOR = "$"
 
@@ -85,7 +86,7 @@ def _load_writes(serde: SerializerProtocol, task_id_to_data: dict[tuple[str, str
     writes = [
         (
             task_id,
-            data["channel"],
+            data["channel"].decode(),
             serde.loads_typed((data["type"], data["value"])),
         )
         for (task_id, _), data in task_id_to_data.items()
@@ -110,8 +111,8 @@ def _parse_dynamodb_checkpoint_data(serde: SerializerProtocol, key: str, data: d
         }
     }
 
-    checkpoint = serde.loads_typed((data["type"], data["checkpoint"]))
-    metadata = serde.loads(data["metadata"])
+    checkpoint = serde.loads_typed((data["type"], data["checkpoint"].value))
+    metadata = serde.loads(data["metadata"].value)
     parent_checkpoint_id = data.get("parent_checkpoint_id", "")
     parent_config = (
         {
@@ -141,7 +142,45 @@ class DynamoDBSaver(BaseCheckpointSaver):
     def __init__(self, table_name: str):
         super().__init__()
         self.dynamodb = boto3.resource('dynamodb')
-        self.table = self.dynamodb.Table(table_name)
+        self.table = self._get_or_create_table(table_name)
+    
+    def _get_or_create_table(self, table_name: str):
+        try:
+            # Attempt to load the table
+            table = self.dynamodb.Table(table_name)
+            table.load()  # This will raise an exception if the table does not exist
+            print(f"Table '{table_name}' already exists.")
+            return table
+        except ClientError as e:
+            if e.response['Error']['Code'] == 'ResourceNotFoundException':
+                # Table does not exist, create it
+                print(f"Table '{table_name}' not found. Creating table...")
+                key_schema = [
+                    {'AttributeName': 'PK', 'KeyType': 'HASH'},  # Partition key
+                    {'AttributeName': 'SK', 'KeyType': 'RANGE'},  # Sort key
+                ]
+                attribute_definitions = [
+                    {'AttributeName': 'PK', 'AttributeType': 'S'},  # String type
+                    {"AttributeName": "SK", "AttributeType": "S"},
+                ]
+                
+                table = self.dynamodb.create_table(
+                    TableName=table_name,
+                    KeySchema=key_schema,
+                    AttributeDefinitions=attribute_definitions,
+                    BillingMode='PAY_PER_REQUEST',
+                    OnDemandThroughput={
+                        'MaxReadRequestUnits': 100,
+                        'MaxWriteRequestUnits': 100
+                    }
+                )
+                table.wait_until_exists()  # Wait for the table to become active
+                print(f"Table '{table_name}' created successfully.")
+                return table
+            else:
+                raise  # Re-raise any other exceptions
+
+
 
     @classmethod
     @contextmanager
@@ -174,7 +213,9 @@ class DynamoDBSaver(BaseCheckpointSaver):
         type_, serialized_checkpoint = self.serde.dumps_typed(checkpoint)
         serialized_metadata = self.serde.dumps(metadata)
         data = {
-            "PK": key,
+            "PK": thread_id,
+            "SK": checkpoint_id,
+            "checkpoint_key": key,
             "checkpoint": serialized_checkpoint,
             "type": type_,
             "metadata": serialized_metadata,
@@ -212,7 +253,10 @@ class DynamoDBSaver(BaseCheckpointSaver):
                 WRITES_IDX_MAP.get(channel, idx),
             )
             type_, serialized_value = self.serde.dumps_typed(value)
-            data = {"PK": key, "channel": channel, "type": type_, "value": serialized_value}
+            SK = DYNAMODB_KEY_SEPARATOR.join([
+                checkpoint_id, task_id
+            ])
+            data = {"PK": thread_id,"SK": SK, "checkpoint_key": key, "channel": channel, "type": type_, "value": serialized_value}
             self.table.put_item(Item=data)
 
     def get_tuple(self, config: RunnableConfig) -> Optional[CheckpointTuple]:
@@ -238,8 +282,10 @@ class DynamoDBSaver(BaseCheckpointSaver):
         )
         if not checkpoint_key:
             return None
+        
+        checkpoint_id = _parse_dynamodb_checkpoint_key(checkpoint_key)["checkpoint_id"]
 
-        response = self.table.get_item(Key={"PK": checkpoint_key})
+        response = self.table.get_item(Key={"PK": thread_id, "SK": checkpoint_id})
         checkpoint_data = response.get('Item', {})
 
         # load pending writes
@@ -273,12 +319,13 @@ class DynamoDBSaver(BaseCheckpointSaver):
         checkpoint_ns = config["configurable"].get("checkpoint_ns", "")
         pattern = _make_dynamodb_checkpoint_key(thread_id, checkpoint_ns, "*")
 
-        keys = _filter_keys(self.table.scan(FilterExpression=Key('PK').begins_with(pattern))['Items'], before, limit)
-        for key in keys:
-            response = self.table.get_item(Key={"PK": key})
-            data = response.get('Item', {})
-            if data and "checkpoint" in data and "metadata" in data:
+        items = self.table.query(
+            KeyConditionExpression=Key('PK').eq(thread_id))["Items"]
+      
+        for data in items:
+            if data and b"checkpoint" in data and b"metadata" in data:
                 # load pending writes
+                key = data["checkpoint_key"]
                 checkpoint_id = _parse_dynamodb_checkpoint_key(key)[
                     "checkpoint_id"
                 ]
@@ -290,35 +337,50 @@ class DynamoDBSaver(BaseCheckpointSaver):
                 )
 
     def _load_pending_writes(self, thread_id: str, checkpoint_ns: str, checkpoint_id: str) -> List[PendingWrite]:
-        writes_key = _make_dynamodb_checkpoint_writes_key(
-            thread_id, checkpoint_ns, checkpoint_id, "*", None
-        )
-        matching_keys = self.table.scan(FilterExpression=Key('PK').begins_with(writes_key))['Items']
+        
+        writes_key = DYNAMODB_KEY_SEPARATOR.join([
+            "writes", thread_id, checkpoint_ns, checkpoint_id
+        ])
+
+
+        matching_keys = self.table.query(
+            KeyConditionExpression=Key('PK').eq(thread_id),
+            FilterExpression=Key('checkpoint_key').begins_with(writes_key)
+            )["Items"]
+        
         parsed_keys = [
-            _parse_dynamodb_checkpoint_writes_key(key["PK"]) for key in matching_keys
+            _parse_dynamodb_checkpoint_writes_key(key["checkpoint_key"]) for key in matching_keys
         ]
         pending_writes = _load_writes(
             self.serde,
             {
-                (parsed_key["task_id"], parsed_key["idx"]): self.table.get_item(Key={"PK": key["PK"]})['Item']
+                (parsed_key["task_id"], parsed_key["idx"]): self.table.get_item(Key={"PK": key["PK"], "SK": key["SK"]})['Item']
                 for key, parsed_key in sorted(
                     zip(matching_keys, parsed_keys), key=lambda x: x[1]["idx"]
                 )
             },
         )
+        print(matching_keys, checkpoint_id)
         return pending_writes
 
     def _get_checkpoint_key(self, table, thread_id: str, checkpoint_ns: str, checkpoint_id: Optional[str]) -> Optional[str]:
         """Determine the DynamoDB key for a checkpoint."""
         if checkpoint_id:
             return _make_dynamodb_checkpoint_key(thread_id, checkpoint_ns, checkpoint_id)
+        
+        checkpoint_key = DYNAMODB_KEY_SEPARATOR.join([
+        "checkpoint", thread_id, checkpoint_ns
+        ])
 
-        all_keys = table.scan(FilterExpression=Key('PK').begins_with(_make_dynamodb_checkpoint_key(thread_id, checkpoint_ns, "*")))['Items']
+        all_keys = table.query(
+            KeyConditionExpression=Key('PK').eq(thread_id),
+            FilterExpression=Key('checkpoint_key').begins_with(checkpoint_key)
+            )["Items"]
+        
         if not all_keys:
             return None
-
         latest_key = max(
             all_keys,
-            key=lambda k: _parse_dynamodb_checkpoint_key(k["PK"])["checkpoint_id"],
+            key=lambda k: _parse_dynamodb_checkpoint_key(k["checkpoint_key"])["checkpoint_id"],
         )
-        return latest_key["PK"]
+        return latest_key["checkpoint_key"]
