@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "langgraph_dynamodb_saver"
-version = "0.1.1"
+version = "0.2.1"
 description = "DynamoDB checkpoint saver implementation for LangGraph"
 authors = [{name = "Kamaal", email = "skamalj@github.com"}]
 readme = "README.md"

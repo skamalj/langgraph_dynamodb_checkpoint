@@ -1,5 +1,3 @@
-// @! create readme for usage , do not exxplain code, include=src/langgraph_dynamodb_saver/dynamodbsaver.py
-
 # LangGraph DynamoDB Saver
 
 A DynamoDB-based checkpoint saver implementation for LangGraph applications.
