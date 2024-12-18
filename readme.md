@@ -1,26 +1,66 @@
 # LangGraph DynamoDB Checkpoint Saver
 
-## Overview
-
-The `langgraph_dynamodb_checkpoint` module provides an implementation for saving checkpoints in DynamoDB for LangGraph applications. 
+A DynamoDB-based checkpoint saver implementation for LangGraph that allows storing and managing checkpoints in Amazon DynamoDB.
 
 ## Installation
 
-To install the module, ensure you have Python 3.9 or higher and use the following command:
+bash
+pip install langgraph_dynamodb_checkpoint
 
-`pip install langgraph-dynamodb-checkpoint
-`
 
 ## Usage
 
-Below is a basic example of how to use the DynamoDB Checkpoint Saver in your LangGraph application.
+### Basic Initialization
 
-`
+python
 from langgraph_dynamodb_checkpoint import DynamoDBSaver
-`
-# Initialize the DynamoDB Saver
 
-### Module creates this table if it does not already exists.
-`
-saver = DynamoDBSaver(table_name='your_table_name', max_read_request_unit=10, max_write_request_unit=10)
-`
+# Initialize the saver with a table name
+saver = DynamoDBSaver(
+    table_name="your-dynamodb-table-name",
+    max_read_request_units=10,  # Optional, default is 10
+    max_write_request_units=10  # Optional, default is 10
+)
+
+
+### Alternative Initialization Using Context Manager
+
+python
+from langgraph_dynamodb_checkpoint import DynamoDBSaver
+
+with DynamoDBSaver.from_conn_info(table_name="your-dynamodb-table-name") as saver:
+    # Use the saver here
+    pass
+
+
+## Parameters
+
+### DynamoDBSaver Constructor
+
+- `table_name` (str): Name of the DynamoDB table to use for storing checkpoints
+- `max_read_request_units` (int, optional): Maximum read request units for the DynamoDB table. Defaults to 10
+- `max_write_request_units` (int, optional): Maximum write request units for the DynamoDB table. Defaults to 10
+
+## Table Structure
+
+The saver automatically creates a DynamoDB table if it doesn't exist, with the following structure:
+
+- Partition Key (PK): String type, used for thread_id
+- Sort Key (SK): String type, used for checkpoint_id
+
+## AWS Configuration
+
+Ensure you have proper AWS credentials configured either through:
+- Environment variables (AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY)
+- AWS credentials file (~/.aws/credentials)
+- IAM role when running on AWS services
+
+The AWS credentials should have permissions to:
+- Create DynamoDB tables (if table doesn't exist)
+- Read and write to DynamoDB tables
+
+## Notes
+
+- The saver automatically creates the DynamoDB table if it doesn't exist
+- Uses on-demand billing mode for DynamoDB
+- Implements all methods required by the LangGraph BaseCheckpointSaver interface
