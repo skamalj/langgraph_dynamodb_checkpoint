@@ -1,63 +1,26 @@
-# LangGraph DynamoDB Saver
+# LangGraph DynamoDB Checkpoint Saver
 
-A DynamoDB-based checkpoint saver implementation for LangGraph applications.
+## Overview
+
+The `langgraph_dynamodb_checkpoint` module provides an implementation for saving checkpoints in DynamoDB for LangGraph applications. 
 
 ## Installation
 
-bash
-pip install langgraph-dynamodb-saver
+To install the module, ensure you have Python 3.9 or higher and use the following command:
 
-
-## Prerequisites
-
-- AWS credentials configured (either through environment variables, AWS CLI, or IAM roles)
-- Appropriate permissions to create and access DynamoDB tables
+`pip install langgraph-dynamodb-checkpoint
+`
 
 ## Usage
 
-python
-from langgraph_dynamodb_saver import DynamoDBSaver
+Below is a basic example of how to use the DynamoDB Checkpoint Saver in your LangGraph application.
 
-# Create a new saver instance with a table name
-saver = DynamoDBSaver(table_name="my-checkpoints")
+`
+from langgraph_dynamodb_checkpoint import DynamoDBSaver
+`
+# Initialize the DynamoDB Saver
 
-# Using context manager
-with DynamoDBSaver.from_conn_info(table_name="my-checkpoints") as saver:
-    # Use the saver in your LangGraph application
-    pass
-
-
-## Configuration
-
-The DynamoDB saver automatically creates a table if it doesn't exist with the following structure:
-
-- Partition Key (PK): String
-- Sort Key (SK): String
-- On-demand billing mode
-- Default throughput limits:
-  - Max Read Request Units: 100
-  - Max Write Request Units: 100
-
-## Environment Variables
-
-Ensure your AWS credentials are properly configured using one of these methods:
-
-bash
-# Option 1: Environment variables
-export AWS_ACCESS_KEY_ID="your_access_key"
-export AWS_SECRET_ACCESS_KEY="your_secret_key"
-export AWS_REGION="your_region"
-
-## Error Handling
-
-The saver will:
-- Automatically create the DynamoDB table if it doesn't exist
-- Handle connection and operation retries
-- Raise appropriate exceptions for permission issues or AWS service problems
-
-## Limitations
-
-- DynamoDB item size limit of 400KB applies to individual checkpoints
-- Queries are eventually consistent by default
-- Table names must be unique within an AWS region
-
+### Module creates this table if it does not already exists.
+`
+saver = DynamoDBSaver(table_name='your_table_name', max_read_request_unit=10, max_write_request_unit=10)
+`

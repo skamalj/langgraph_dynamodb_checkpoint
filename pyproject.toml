@@ -3,8 +3,8 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "langgraph_dynamodb_saver"
-version = "0.2.1"
+name = "langgraph_dynamodb_checkpoint"
+version = "0.1.2"
 description = "DynamoDB checkpoint saver implementation for LangGraph"
 authors = [{name = "Kamaal", email = "skamalj@github.com"}]
 readme = "README.md"
@@ -31,7 +31,7 @@ dev = [
 ]
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/langgraph_dynamodb_saver"]
+packages = ["src/langgraph_dynamodb_checkpoint"]
 
 [tool.black]
 line-length = 88

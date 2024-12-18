@@ -139,12 +139,12 @@ class DynamoDBSaver(BaseCheckpointSaver):
 
     table: Any
 
-    def __init__(self, table_name: str):
+    def __init__(self, table_name: str,  max_read_request_units: int = 10, max_write_request_units: int = 10):
         super().__init__()
         self.dynamodb = boto3.resource('dynamodb')
-        self.table = self._get_or_create_table(table_name)
+        self.table = self._get_or_create_table(table_name, max_read_request_units,max_write_request_units)
     
-    def _get_or_create_table(self, table_name: str):
+    def _get_or_create_table(self, table_name: str, max_read_request_units: int, max_write_request_units: int):
         try:
             # Attempt to load the table
             table = self.dynamodb.Table(table_name)
@@ -170,8 +170,8 @@ class DynamoDBSaver(BaseCheckpointSaver):
                     AttributeDefinitions=attribute_definitions,
                     BillingMode='PAY_PER_REQUEST',
                     OnDemandThroughput={
-                        'MaxReadRequestUnits': 100,
-                        'MaxWriteRequestUnits': 100
+                        'MaxReadRequestUnits': max_read_request_units,
+                        'MaxWriteRequestUnits': max_write_request_units
                     }
                 )
                 table.wait_until_exists()  # Wait for the table to become active
@@ -360,7 +360,6 @@ class DynamoDBSaver(BaseCheckpointSaver):
                 )
             },
         )
-        print(matching_keys, checkpoint_id)
         return pending_writes
 
     def _get_checkpoint_key(self, table, thread_id: str, checkpoint_ns: str, checkpoint_id: Optional[str]) -> Optional[str]:

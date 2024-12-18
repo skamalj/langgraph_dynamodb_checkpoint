@@ -5,7 +5,7 @@ from langchain_core.runnables import ConfigurableField
 from langchain_core.tools import tool
 from langchain_openai import ChatOpenAI
 from langgraph.prebuilt import create_react_agent
-from langgraph_dynamodb_saver import DynamoDBSaver
+from langgraph_dynamodb_checkpoint import DynamoDBSaver
 
 
 def _set_env(var: str):
