@@ -86,7 +86,7 @@ def _load_writes(serde: SerializerProtocol, task_id_to_data: dict[tuple[str, str
     writes = [
         (
             task_id,
-            data["channel"].decode(),
+            data["channel"],
             serde.loads_typed((data["type"], data["value"])),
         )
         for (task_id, _), data in task_id_to_data.items()
