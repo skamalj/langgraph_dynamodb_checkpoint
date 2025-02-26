@@ -21,7 +21,7 @@ from typing_extensions import TypedDict
 
 from langgraph.graph import StateGraph, MessagesState, START
 
-memory = DynamoDBSaver(table_name="langgraph_state")
+memory = DynamoDBSaver(table_name="langgraph_state2")
 
 def call_model(state: MessagesState):
     response = model.invoke(state["messages"])

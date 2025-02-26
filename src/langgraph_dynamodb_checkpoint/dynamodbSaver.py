@@ -6,7 +6,7 @@ from typing import Any, Iterator, List, Optional, Tuple
 from langchain_core.runnables import RunnableConfig
 
 from langgraph.checkpoint.base import WRITES_IDX_MAP, BaseCheckpointSaver, ChannelVersions, Checkpoint, CheckpointMetadata, CheckpointTuple, PendingWrite, get_checkpoint_id
-from langgraph.checkpoint.serde.base import SerializerProtocol
+from langgraph_dynamodb_checkpoint.dynamodbSerializer import DynamoDBSerializer
 import boto3
 from boto3.dynamodb.conditions import Key
 from botocore.exceptions import ClientError
@@ -81,7 +81,7 @@ def _filter_keys(keys: List[str], before: Optional[RunnableConfig], limit: Optio
     return keys
 
 
-def _load_writes(serde: SerializerProtocol, task_id_to_data: dict[tuple[str, str], dict]) -> list[PendingWrite]:
+def _load_writes(serde: DynamoDBSerializer, task_id_to_data: dict[tuple[str, str], dict]) -> list[PendingWrite]:
     """Deserialize pending writes."""
     writes = [
         (
@@ -94,7 +94,7 @@ def _load_writes(serde: SerializerProtocol, task_id_to_data: dict[tuple[str, str
     return writes
 
 
-def _parse_dynamodb_checkpoint_data(serde: SerializerProtocol, key: str, data: dict, pending_writes: Optional[List[PendingWrite]] = None) -> Optional[CheckpointTuple]:
+def _parse_dynamodb_checkpoint_data(serde: DynamoDBSerializer, key: str, data: dict, pending_writes: Optional[List[PendingWrite]] = None) -> Optional[CheckpointTuple]:
     """Parse checkpoint data retrieved from DynamoDB."""
     if not data:
         return None
@@ -111,8 +111,8 @@ def _parse_dynamodb_checkpoint_data(serde: SerializerProtocol, key: str, data: d
         }
     }
 
-    checkpoint = serde.loads_typed((data["type"], data["checkpoint"].value))
-    metadata = serde.loads(data["metadata"].value)
+    checkpoint = serde.loads_typed((data["type"], data["checkpoint"]))
+    metadata = serde.loads(data["metadata"])
     parent_checkpoint_id = data.get("parent_checkpoint_id", "")
     parent_config = (
         {
@@ -142,6 +142,7 @@ class DynamoDBSaver(BaseCheckpointSaver):
     def __init__(self, table_name: str,  max_read_request_units: int = 10, max_write_request_units: int = 10):
         super().__init__()
         self.dynamodb = boto3.resource('dynamodb')
+        self.dynamodb_serde = DynamoDBSerializer(self.serde)
         self.table = self._get_or_create_table(table_name, max_read_request_units,max_write_request_units)
     
     def _get_or_create_table(self, table_name: str, max_read_request_units: int, max_write_request_units: int):
@@ -210,8 +211,8 @@ class DynamoDBSaver(BaseCheckpointSaver):
         parent_checkpoint_id = config["configurable"].get("checkpoint_id")
         key = _make_dynamodb_checkpoint_key(thread_id, checkpoint_ns, checkpoint_id)
 
-        type_, serialized_checkpoint = self.serde.dumps_typed(checkpoint)
-        serialized_metadata = self.serde.dumps(metadata)
+        type_, serialized_checkpoint = self.dynamodb_serde.dumps_typed(checkpoint)
+        serialized_metadata = self.dynamodb_serde.dumps(metadata)
         data = {
             "PK": thread_id,
             "SK": checkpoint_id,
@@ -252,7 +253,7 @@ class DynamoDBSaver(BaseCheckpointSaver):
                 task_id,
                 WRITES_IDX_MAP.get(channel, idx),
             )
-            type_, serialized_value = self.serde.dumps_typed(value)
+            type_, serialized_value = self.dynamodb_serde.dumps_typed(value)
             SK = DYNAMODB_KEY_SEPARATOR.join([
                 checkpoint_id, task_id
             ])
@@ -297,7 +298,7 @@ class DynamoDBSaver(BaseCheckpointSaver):
             thread_id, checkpoint_ns, checkpoint_id
         )
         return _parse_dynamodb_checkpoint_data(
-            self.serde, checkpoint_key, checkpoint_data, pending_writes=pending_writes
+            self.dynamodb_serde, checkpoint_key, checkpoint_data, pending_writes=pending_writes
         )
 
     def list(self, config: Optional[RunnableConfig], *, filter: Optional[dict[str, Any]] = None, before: Optional[RunnableConfig] = None, limit: Optional[int] = None) -> Iterator[CheckpointTuple]:
@@ -333,7 +334,7 @@ class DynamoDBSaver(BaseCheckpointSaver):
                     thread_id, checkpoint_ns, checkpoint_id
                 )
                 yield _parse_dynamodb_checkpoint_data(
-                    self.serde, key, data, pending_writes=pending_writes
+                    self.dynamodb_serde, key, data, pending_writes=pending_writes
                 )
 
     def _load_pending_writes(self, thread_id: str, checkpoint_ns: str, checkpoint_id: str) -> List[PendingWrite]:
@@ -352,7 +353,7 @@ class DynamoDBSaver(BaseCheckpointSaver):
             _parse_dynamodb_checkpoint_writes_key(key["checkpoint_key"]) for key in matching_keys
         ]
         pending_writes = _load_writes(
-            self.serde,
+            self.dynamodb_serde,
             {
                 (parsed_key["task_id"], parsed_key["idx"]): self.table.get_item(Key={"PK": key["PK"], "SK": key["SK"]})['Item']
                 for key, parsed_key in sorted(
