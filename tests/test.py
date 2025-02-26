@@ -34,9 +34,11 @@ builder.add_edge(START, "call_model")
 graph = builder.compile(checkpointer=memory)
 
 config = {"configurable": {"thread_id": "900"}}
-input_message = {"type": "user", "content": "hi! I'm bob"}
-for chunk in graph.stream({"messages": [input_message]}, config, stream_mode="values"):
-    chunk["messages"][-1].pretty_print()
+
+memory.delete(config)
+#input_message = {"type": "user", "content": "hi! I'm bob"}
+#for chunk in graph.stream({"messages": [input_message]}, config, stream_mode="values"):
+#    chunk["messages"][-1].pretty_print()
 
 input_message = {"type": "user", "content": "what's my name?"}
 for chunk in graph.stream({"messages": [input_message]}, config, stream_mode="values"):

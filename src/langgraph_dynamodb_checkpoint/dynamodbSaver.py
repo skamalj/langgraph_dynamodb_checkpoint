@@ -260,6 +260,25 @@ class DynamoDBSaver(BaseCheckpointSaver):
             data = {"PK": thread_id,"SK": SK, "checkpoint_key": key, "channel": channel, "type": type_, "value": serialized_value}
             self.table.put_item(Item=data)
 
+# @! create delete function for dynamodb similar to put item . Function accept  config only as threadid
+
+    def delete(self, config: RunnableConfig) -> None:
+        """Delete a checkpoint from DynamoDB based on the provided config.
+
+        Args:
+            config (RunnableConfig): The config containing the thread ID for the checkpoint to delete.
+        """
+        thread_id = config["configurable"]["thread_id"]
+        items_to_delete = self.table.query(
+            KeyConditionExpression=Key('PK').eq(thread_id)
+        )["Items"]
+        print(f"Number of items to delete: {len(items_to_delete)}")
+        with self.table.batch_writer() as batch:
+            for item in items_to_delete:
+                batch.delete_item(Key={"PK": item["PK"], "SK": item["SK"]})
+
+
+
     def get_tuple(self, config: RunnableConfig) -> Optional[CheckpointTuple]:
         """Get a checkpoint tuple from DynamoDB.
 

@@ -16,25 +16,36 @@ python
 from langgraph_dynamodb_checkpoint import DynamoDBSaver
 
 # Initialize the saver with a table name
+```
 saver = DynamoDBSaver(
     table_name="your-dynamodb-table-name",
     max_read_request_units=10,  # Optional, default is 10
     max_write_request_units=10  # Optional, default is 10
 )
-
+```
 
 ### Alternative Initialization Using Context Manager
 
-python
+```
 from langgraph_dynamodb_checkpoint import DynamoDBSaver
 
 with DynamoDBSaver.from_conn_info(table_name="your-dynamodb-table-name") as saver:
     # Use the saver here
     pass
-
+```
 
 ## Parameters
+This only supports thread ID as config. Namespace is not yet supported
+```
+config = {"configurable": {"thread_id": "900"}}
+```
 
+### Supports Delete
+Checkpointer supports delete basis given thread_id
+```
+config = {"configurable": {"thread_id": "900"}}
+memory.delete(config)
+```
 ### DynamoDBSaver Constructor
 
 - `table_name` (str): Name of the DynamoDB table to use for storing checkpoints
