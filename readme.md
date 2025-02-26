@@ -3,7 +3,7 @@
 A DynamoDB-based checkpoint saver implementation for LangGraph that allows storing and managing checkpoints in Amazon DynamoDB.
 
 ## Installation
-
+### If installing this version, then delete the underlying table as well. Existing data is not compatible with version >= 1.5
 bash
 pip install langgraph_dynamodb_checkpoint
 
