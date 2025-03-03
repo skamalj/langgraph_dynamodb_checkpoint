@@ -10,8 +10,8 @@ class DynamoDBSerializer:
         return type_, data_base64
 
     def loads_typed(self, data):
-        type_name, serialized_obj = data
-        serialized_obj = base64.b64decode(serialized_obj.encode('utf-8'))
+        type_name, obj_string = data
+        serialized_obj = base64.b64decode(obj_string)
         return self.serde.loads_typed((type_name, serialized_obj))
 
     def dumps(self, obj):
@@ -20,5 +20,5 @@ class DynamoDBSerializer:
         return data_base64
 
     def loads(self, serialized_obj):
-        serialized_obj = base64.b64decode(serialized_obj.encode('utf-8'))
+        serialized_obj = base64.b64decode(serialized_obj)
         return self.serde.loads(serialized_obj)
