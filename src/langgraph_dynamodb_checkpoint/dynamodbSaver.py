@@ -89,7 +89,7 @@ def _load_writes(serde: DynamoDBSerializer, task_id_to_data: dict[tuple[str, str
             data["channel"],
             serde.loads_typed((data["type"], data["value"])),
         )
-        for (task_id, _), data in task_id_to_data.items()
+        for (task_id, _), data in task_id_to_data.items() if data["type"] and data["value"]
     ]
     return writes
 
@@ -139,7 +139,7 @@ class DynamoDBSaver(BaseCheckpointSaver):
 
     table: Any
 
-    def __init__(self, table_name: str,  max_read_request_units: int = 10, max_write_request_units: int = 10):
+    def __init__(self, table_name: str,  max_read_request_units: int = 100, max_write_request_units: int = 100):
         super().__init__()
         self.dynamodb = boto3.resource('dynamodb')
         self.dynamodb_serde = DynamoDBSerializer(self.serde)
@@ -185,10 +185,10 @@ class DynamoDBSaver(BaseCheckpointSaver):
 
     @classmethod
     @contextmanager
-    def from_conn_info(cls, *, table_name: str) -> Iterator["DynamoDBSaver"]:
+    def from_conn_info(cls, *, table_name: str, max_read_request_units: int = 100, max_write_request_units: int = 100) -> Iterator["DynamoDBSaver"]:
         saver = None
         try:
-            saver = DynamoDBSaver(table_name)
+            saver = DynamoDBSaver(table_name,max_read_request_units,max_write_request_units)
             yield saver
         finally:
             pass
@@ -263,19 +263,46 @@ class DynamoDBSaver(BaseCheckpointSaver):
 # @! create delete function for dynamodb similar to put item . Function accept  config only as threadid
 
     def delete(self, config: RunnableConfig) -> None:
-        """Delete a checkpoint from DynamoDB based on the provided config.
+        """
+        Delete all checkpoints from DynamoDB for the given thread ID, handling pagination.
 
         Args:
             config (RunnableConfig): The config containing the thread ID for the checkpoint to delete.
         """
         thread_id = config["configurable"]["thread_id"]
-        items_to_delete = self.table.query(
-            KeyConditionExpression=Key('PK').eq(thread_id)
-        )["Items"]
-        print(f"Number of items to delete: {len(items_to_delete)}")
-        with self.table.batch_writer() as batch:
-            for item in items_to_delete:
-                batch.delete_item(Key={"PK": item["PK"], "SK": item["SK"]})
+        print(f"Deleting items for thread_id: {thread_id}")
+
+        last_evaluated_key = None
+        total_deleted = 0
+
+        while True:
+            if last_evaluated_key:
+                response = self.table.query(
+                    KeyConditionExpression=Key('PK').eq(thread_id),
+                    ExclusiveStartKey=last_evaluated_key
+                )
+            else:
+                response = self.table.query(
+                    KeyConditionExpression=Key('PK').eq(thread_id)
+                )
+
+            items = response.get("Items", [])
+            print(f"Fetched {len(items)} items to delete")
+
+            if not items:
+                break
+            
+            with self.table.batch_writer() as batch:
+                for item in items:
+                    batch.delete_item(Key={"PK": item["PK"], "SK": item["SK"]})
+                    total_deleted += 1
+
+            last_evaluated_key = response.get("LastEvaluatedKey")
+            if not last_evaluated_key:
+                break
+
+        print(f"Total items deleted: {total_deleted}")
+
 
 
 
@@ -339,11 +366,18 @@ class DynamoDBSaver(BaseCheckpointSaver):
         checkpoint_ns = config["configurable"].get("checkpoint_ns", "")
         pattern = _make_dynamodb_checkpoint_key(thread_id, checkpoint_ns, "*")
 
+        checkpoint_key = DYNAMODB_KEY_SEPARATOR.join([
+            "checkpoint", thread_id, checkpoint_ns
+            ])
+        
         items = self.table.query(
-            KeyConditionExpression=Key('PK').eq(thread_id))["Items"]
-      
+            KeyConditionExpression=Key('PK').eq(thread_id),
+            FilterExpression=Key('checkpoint_key').begins_with(checkpoint_key),
+            ScanIndexForward=False,
+            Limit=limit if limit else 0)["Items"]
+        
         for data in items:
-            if data and b"checkpoint" in data and b"metadata" in data:
+            if data and "checkpoint" in data and "metadata" in data:
                 # load pending writes
                 key = data["checkpoint_key"]
                 checkpoint_id = _parse_dynamodb_checkpoint_key(key)[
@@ -365,7 +399,8 @@ class DynamoDBSaver(BaseCheckpointSaver):
 
         matching_keys = self.table.query(
             KeyConditionExpression=Key('PK').eq(thread_id),
-            FilterExpression=Key('checkpoint_key').begins_with(writes_key)
+            FilterExpression=Key('checkpoint_key').begins_with(writes_key),
+            ScanIndexForward=False
             )["Items"]
         
         parsed_keys = [
@@ -393,7 +428,9 @@ class DynamoDBSaver(BaseCheckpointSaver):
 
         all_keys = table.query(
             KeyConditionExpression=Key('PK').eq(thread_id),
-            FilterExpression=Key('checkpoint_key').begins_with(checkpoint_key)
+            FilterExpression=Key('checkpoint_key').begins_with(checkpoint_key),
+            ScanIndexForward=False,
+            Limit=1
             )["Items"]
         
         if not all_keys:
