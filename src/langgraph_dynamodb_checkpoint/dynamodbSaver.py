@@ -148,14 +148,6 @@ class DynamoDBSaver(BaseCheckpointSaver):
             table = self.dynamodb.Table(table_name)
             table.load()  # This will raise an exception if the table does not exist
             print(f"Table '{table_name}' already exists.")
-            if self.ttl_seconds:
-                self.dynamodb.meta.client.update_time_to_live(
-                    TableName=table_name,
-                    TimeToLiveSpecification={
-                        'Enabled': True,
-                        'AttributeName': 'ttl'  # This should be a Number (epoch time in seconds)
-                    }
-                )
             return table
         except ClientError as e:
             if e.response['Error']['Code'] == 'ResourceNotFoundException':
