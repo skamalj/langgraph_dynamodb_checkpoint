@@ -1,18 +1,14 @@
-# @! include=redis.py convert all references of redis to dynamodb. provider=openai
-
 from contextlib import  contextmanager
 from typing import Any, Iterator, List, Optional, Tuple
-
 from langchain_core.runnables import RunnableConfig
-
 from langgraph.checkpoint.base import WRITES_IDX_MAP, BaseCheckpointSaver, ChannelVersions, Checkpoint, CheckpointMetadata, CheckpointTuple, PendingWrite, get_checkpoint_id
 from langgraph_dynamodb_checkpoint.dynamodbSerializer import DynamoDBSerializer
 import boto3
 from boto3.dynamodb.conditions import Key
 from botocore.exceptions import ClientError
+import time
 
 DYNAMODB_KEY_SEPARATOR = "$"
-
 
 def _make_dynamodb_checkpoint_key(thread_id: str, checkpoint_ns: str, checkpoint_id: str) -> str:
     return DYNAMODB_KEY_SEPARATOR.join([
@@ -139,18 +135,27 @@ class DynamoDBSaver(BaseCheckpointSaver):
 
     table: Any
 
-    def __init__(self, table_name: str,  max_read_request_units: int = 100, max_write_request_units: int = 100):
+    def __init__(self, table_name: str,  max_read_request_units: int = 100, max_write_request_units: int = 100, ttl_seconds: int = None) -> None:
         super().__init__()
         self.dynamodb = boto3.resource('dynamodb')
         self.dynamodb_serde = DynamoDBSerializer(self.serde)
+        self.ttl_seconds = ttl_seconds  # Time to live in seconds (default: 24 hours)
         self.table = self._get_or_create_table(table_name, max_read_request_units,max_write_request_units)
-    
+
     def _get_or_create_table(self, table_name: str, max_read_request_units: int, max_write_request_units: int):
         try:
             # Attempt to load the table
             table = self.dynamodb.Table(table_name)
             table.load()  # This will raise an exception if the table does not exist
             print(f"Table '{table_name}' already exists.")
+            if self.ttl_seconds:
+                self.dynamodb.meta.client.update_time_to_live(
+                    TableName=table_name,
+                    TimeToLiveSpecification={
+                        'Enabled': True,
+                        'AttributeName': 'ttl'  # This should be a Number (epoch time in seconds)
+                    }
+                )
             return table
         except ClientError as e:
             if e.response['Error']['Code'] == 'ResourceNotFoundException':
@@ -176,12 +181,20 @@ class DynamoDBSaver(BaseCheckpointSaver):
                     }
                 )
                 table.wait_until_exists()  # Wait for the table to become active
+
+                if self.ttl_seconds:
+                    self.dynamodb.meta.client.update_time_to_live(
+                        TableName=table_name,
+                        TimeToLiveSpecification={
+                            'Enabled': True,
+                            'AttributeName': 'ttl'  # This should be a Number (epoch time in seconds)
+                        }
+                    )
+
                 print(f"Table '{table_name}' created successfully.")
                 return table
             else:
                 raise  # Re-raise any other exceptions
-
-
 
     @classmethod
     @contextmanager
@@ -213,6 +226,7 @@ class DynamoDBSaver(BaseCheckpointSaver):
 
         type_, serialized_checkpoint = self.dynamodb_serde.dumps_typed(checkpoint)
         serialized_metadata = self.dynamodb_serde.dumps(metadata)
+
         data = {
             "PK": thread_id,
             "SK": checkpoint_id,
@@ -224,6 +238,10 @@ class DynamoDBSaver(BaseCheckpointSaver):
             if parent_checkpoint_id
             else "",
         }
+
+        if self.ttl_seconds:
+            data["ttl"] = int(time.time()) + self.ttl_seconds
+
         self.table.put_item(Item=data)
         return {
             "configurable": {
@@ -258,6 +276,10 @@ class DynamoDBSaver(BaseCheckpointSaver):
                 checkpoint_id, task_id
             ])
             data = {"PK": thread_id,"SK": SK, "checkpoint_key": key, "channel": channel, "type": type_, "value": serialized_value}
+            
+            if self.ttl_seconds:
+                data["ttl"] = int(time.time()) + self.ttl_seconds
+
             self.table.put_item(Item=data)
 
 # @! create delete function for dynamodb similar to put item . Function accept  config only as threadid

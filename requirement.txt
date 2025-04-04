@@ -1,0 +1,4 @@
+langchain-core
+langgraph
+boto3
+botocore
