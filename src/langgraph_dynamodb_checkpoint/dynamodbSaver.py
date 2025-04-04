@@ -198,10 +198,10 @@ class DynamoDBSaver(BaseCheckpointSaver):
 
     @classmethod
     @contextmanager
-    def from_conn_info(cls, *, table_name: str, max_read_request_units: int = 100, max_write_request_units: int = 100) -> Iterator["DynamoDBSaver"]:
+    def from_conn_info(cls, *, table_name: str, max_read_request_units: int = 100, max_write_request_units: int = 100, ttl_seconds: int = None) -> Iterator["DynamoDBSaver"]:
         saver = None
         try:
-            saver = DynamoDBSaver(table_name,max_read_request_units,max_write_request_units)
+            saver = DynamoDBSaver(table_name,max_read_request_units,max_write_request_units, ttl_seconds)
             yield saver
         finally:
             pass
