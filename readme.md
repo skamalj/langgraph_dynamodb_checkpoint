@@ -15,12 +15,13 @@ pip install langgraph_dynamodb_checkpoint
 - `table_name` (str): Name of the DynamoDB table to use for storing checkpoints
 - `max_read_request_units` (int, optional): Maximum read request units for the DynamoDB table. Defaults to 10
 - `max_write_request_units` (int, optional): Maximum write request units for the DynamoDB table. Defaults to 10
-- `ttl` (int, optional): TTL value set for all checkpoint items.
+- `ttl_seconds` (int, optional): TTL value set for all checkpoint items.
 
-### Basic Initialization
+### Import
 
-python
+```
 from langgraph_dynamodb_checkpoint import DynamoDBSaver
+```
 
 # Initialize the saver with a table name
 ```
@@ -28,7 +29,7 @@ saver = DynamoDBSaver(
     table_name="your-dynamodb-table-name",
     max_read_request_units=10,  # Optional, default is 100
     max_write_request_units=10  # Optional, default is 100
-    ttl=86400
+    ttl_seconds=86400
 )
 ```
 Table has ttl enabled with attribute name set to `ttl`
