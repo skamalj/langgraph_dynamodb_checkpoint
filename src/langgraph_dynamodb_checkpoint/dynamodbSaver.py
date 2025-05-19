@@ -1,5 +1,5 @@
 from contextlib import  contextmanager
-from typing import Any, Iterator, List, Optional, Tuple
+from typing import Any, Iterator, List, Optional, Tuple, AsyncIterator
 from langchain_core.runnables import RunnableConfig
 from langgraph.checkpoint.base import WRITES_IDX_MAP, BaseCheckpointSaver, ChannelVersions, Checkpoint, CheckpointMetadata, CheckpointTuple, PendingWrite, get_checkpoint_id
 from langgraph_dynamodb_checkpoint.dynamodbSerializer import DynamoDBSerializer
@@ -7,6 +7,7 @@ import boto3
 from boto3.dynamodb.conditions import Key
 from botocore.exceptions import ClientError
 import time
+import asyncio
 
 DYNAMODB_KEY_SEPARATOR = "$"
 
@@ -454,3 +455,28 @@ class DynamoDBSaver(BaseCheckpointSaver):
             key=lambda k: _parse_dynamodb_checkpoint_key(k["checkpoint_key"])["checkpoint_id"],
         )
         return latest_key["checkpoint_key"]
+    
+    async def aget(self, config: RunnableConfig) -> Optional[Checkpoint]:
+        if value := await self.aget_tuple(config):
+            return value.checkpoint
+
+    async def aget_tuple(self, config: RunnableConfig) -> Optional[CheckpointTuple]:
+        return await asyncio.get_running_loop().run_in_executor(
+            None, self.get_tuple, config
+        )
+
+    async def alist(self, config: RunnableConfig) -> AsyncIterator[CheckpointTuple]:
+        loop = asyncio.get_running_loop()
+        iter = loop.run_in_executor(None, self.list, config)
+        while True:
+            try:
+                yield await loop.run_in_executor(None, next, iter)
+            except StopIteration:
+                return
+
+    async def aput(
+        self, config: RunnableConfig, checkpoint: Checkpoint
+    ) -> RunnableConfig:
+        return await asyncio.get_running_loop().run_in_executor(
+            None, self.put, config, checkpoint
+        )

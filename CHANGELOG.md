@@ -2,6 +2,10 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.2.6]
+### Changed
+- Async support
+
 ## [0.2.2] - 2025-04-04
 ### Added
 - TTL Support
