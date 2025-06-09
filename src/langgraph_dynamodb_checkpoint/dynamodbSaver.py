@@ -441,12 +441,7 @@ class DynamoDBSaver(BaseCheckpointSaver):
         "checkpoint", thread_id, checkpoint_ns
         ])
 
-        all_keys = table.query(
-            KeyConditionExpression=Key('PK').eq(thread_id),
-            FilterExpression=Key('checkpoint_key').begins_with(checkpoint_key),
-            ScanIndexForward=False,
-            Limit=1
-            )["Items"]
+        all_keys = self._get_filtered_items(thread_id, checkpoint_key)
         
         if not all_keys:
             return None
@@ -456,6 +451,37 @@ class DynamoDBSaver(BaseCheckpointSaver):
         )
         return latest_key["checkpoint_key"]
     
+    def _get_filtered_items(
+    self,
+    thread_id,
+    checkpoint_key_prefix,
+    max_results=1,
+    page_size=10):
+        """Retrieve filtered items from DynamoDB based on checkpoint key prefix."""
+        last_evaluated_key = None
+        results = []
+
+        while len(results) < max_results:
+            response = self.table.query(
+                KeyConditionExpression=Key('PK').eq(thread_id),
+                ScanIndexForward=False,  # descending sort
+                ExclusiveStartKey=last_evaluated_key,
+                Limit=page_size,  # controls read size per request
+                ConsistentRead=True
+            )
+
+            for item in response["Items"]:
+                if item.get("checkpoint_key", "").startswith(checkpoint_key_prefix):
+                    results.append(item)
+                    if len(results) >= max_results:
+                        break
+
+            last_evaluated_key = response.get("LastEvaluatedKey")
+            if not last_evaluated_key:
+                break  # no more data to paginate
+
+        return results
+
     async def aget(self, config: RunnableConfig) -> Optional[Checkpoint]:
         if value := await self.aget_tuple(config):
             return value.checkpoint
