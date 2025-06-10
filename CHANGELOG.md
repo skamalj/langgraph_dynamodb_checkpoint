@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.2.6.2]
+### Changed
+- Logger added
+- Interrupt functionality fix
+
 ## [0.2.6]
 ### Changed
 - Async support
