@@ -1,5 +1,5 @@
 from contextlib import  contextmanager
-from typing import Any, Iterator, List, Optional, Tuple, AsyncIterator
+from typing import Any, Iterator, List, Optional, Tuple, AsyncIterator, Dict
 from langchain_core.runnables import RunnableConfig
 from langgraph.checkpoint.base import WRITES_IDX_MAP, BaseCheckpointSaver, ChannelVersions, Checkpoint, CheckpointMetadata, CheckpointTuple, PendingWrite, get_checkpoint_id
 from langgraph_dynamodb_checkpoint.dynamodbSerializer import DynamoDBSerializer
@@ -8,6 +8,8 @@ from boto3.dynamodb.conditions import Key
 from botocore.exceptions import ClientError
 import time
 import asyncio
+import logging
+logger = logging.getLogger("langgraph_dynamodb")
 
 DYNAMODB_KEY_SEPARATOR = "$"
 
@@ -148,12 +150,12 @@ class DynamoDBSaver(BaseCheckpointSaver):
             # Attempt to load the table
             table = self.dynamodb.Table(table_name)
             table.load()  # This will raise an exception if the table does not exist
-            print(f"Table '{table_name}' already exists.")
+            logger.info(f"Table '{table_name}' already exists.")
             return table
         except ClientError as e:
             if e.response['Error']['Code'] == 'ResourceNotFoundException':
                 # Table does not exist, create it
-                print(f"Table '{table_name}' not found. Creating table...")
+                logger.info(f"Table '{table_name}' not found. Creating table...")
                 key_schema = [
                     {'AttributeName': 'PK', 'KeyType': 'HASH'},  # Partition key
                     {'AttributeName': 'SK', 'KeyType': 'RANGE'},  # Sort key
@@ -184,7 +186,7 @@ class DynamoDBSaver(BaseCheckpointSaver):
                         }
                     )
 
-                print(f"Table '{table_name}' created successfully.")
+                logger.info(f"Table '{table_name}' created successfully.")
                 return table
             else:
                 raise  # Re-raise any other exceptions
@@ -285,7 +287,7 @@ class DynamoDBSaver(BaseCheckpointSaver):
             config (RunnableConfig): The config containing the thread ID for the checkpoint to delete.
         """
         thread_id = config["configurable"]["thread_id"]
-        print(f"Deleting items for thread_id: {thread_id}")
+        logger.debug(f"Deleting items for thread_id: {thread_id}")
 
         last_evaluated_key = None
         total_deleted = 0
@@ -302,7 +304,7 @@ class DynamoDBSaver(BaseCheckpointSaver):
                 )
 
             items = response.get("Items", [])
-            print(f"Fetched {len(items)} items to delete")
+            logger.debug(f"Fetched {len(items)} items to delete")
 
             if not items:
                 break
@@ -316,7 +318,7 @@ class DynamoDBSaver(BaseCheckpointSaver):
             if not last_evaluated_key:
                 break
 
-        print(f"Total items deleted: {total_deleted}")
+        logger.debug(f"Total items deleted: {total_deleted}")
 
 
 
@@ -335,6 +337,7 @@ class DynamoDBSaver(BaseCheckpointSaver):
         Returns:
             Optional[CheckpointTuple]: The retrieved checkpoint tuple, or None if no matching checkpoint was found.
         """
+        logger.debug(f"Getting checkpoint tuple for config: {config}")
         thread_id = config["configurable"]["thread_id"]
         checkpoint_id = get_checkpoint_id(config)
         checkpoint_ns = config["configurable"].get("checkpoint_ns", "")
@@ -346,8 +349,8 @@ class DynamoDBSaver(BaseCheckpointSaver):
             return None
         
         checkpoint_id = _parse_dynamodb_checkpoint_key(checkpoint_key)["checkpoint_id"]
-
-        response = self.table.get_item(Key={"PK": thread_id, "SK": checkpoint_id})
+        logger.debug(f"Checkpoint key: {checkpoint_key}, checkpoint_id: {checkpoint_id}")
+        response = self.table.get_item(Key={"PK": thread_id, "SK": checkpoint_id}, ConsistentRead=True)
         checkpoint_data = response.get('Item', {})
 
         # load pending writes
@@ -362,7 +365,7 @@ class DynamoDBSaver(BaseCheckpointSaver):
             self.dynamodb_serde, checkpoint_key, checkpoint_data, pending_writes=pending_writes
         )
 
-    def list(self, config: Optional[RunnableConfig], *, filter: Optional[dict[str, Any]] = None, before: Optional[RunnableConfig] = None, limit: Optional[int] = None) -> Iterator[CheckpointTuple]:
+    def list(self, config: Optional[RunnableConfig], *, filter: Optional[Dict[str, Any]] = None, before: Optional[RunnableConfig] = None, limit: Optional[int] = None) -> Iterator[CheckpointTuple]:
         """List checkpoints from the database.
 
         This method retrieves a list of checkpoint tuples from DynamoDB based
@@ -424,7 +427,7 @@ class DynamoDBSaver(BaseCheckpointSaver):
         pending_writes = _load_writes(
             self.dynamodb_serde,
             {
-                (parsed_key["task_id"], parsed_key["idx"]): self.table.get_item(Key={"PK": key["PK"], "SK": key["SK"]})['Item']
+                (parsed_key["task_id"], parsed_key["idx"]): self.table.get_item(Key={"PK": key["PK"], "SK": key["SK"]}, ConsistentRead=True)['Item']
                 for key, parsed_key in sorted(
                     zip(matching_keys, parsed_keys), key=lambda x: x[1]["idx"]
                 )
@@ -433,6 +436,7 @@ class DynamoDBSaver(BaseCheckpointSaver):
         return pending_writes
 
     def _get_checkpoint_key(self, table, thread_id: str, checkpoint_ns: str, checkpoint_id: Optional[str]) -> Optional[str]:
+        logger.debug(f"Getting checkpoint key for thread_id: {thread_id}, checkpoint_ns: {checkpoint_ns}, checkpoint_id: {checkpoint_id}")
         """Determine the DynamoDB key for a checkpoint."""
         if checkpoint_id:
             return _make_dynamodb_checkpoint_key(thread_id, checkpoint_ns, checkpoint_id)
@@ -462,13 +466,17 @@ class DynamoDBSaver(BaseCheckpointSaver):
         results = []
 
         while len(results) < max_results:
-            response = self.table.query(
-                KeyConditionExpression=Key('PK').eq(thread_id),
-                ScanIndexForward=False,  # descending sort
-                ExclusiveStartKey=last_evaluated_key,
-                Limit=page_size,  # controls read size per request
-                ConsistentRead=True
-            )
+            query_params = {
+            "KeyConditionExpression": Key('PK').eq(thread_id),
+            "ScanIndexForward": False,
+            "Limit": page_size,
+            "ConsistentRead": True
+            }
+
+            if last_evaluated_key:
+                query_params["ExclusiveStartKey"] = last_evaluated_key
+
+            response = self.table.query(**query_params)
 
             for item in response["Items"]:
                 if item.get("checkpoint_key", "").startswith(checkpoint_key_prefix):
@@ -479,7 +487,9 @@ class DynamoDBSaver(BaseCheckpointSaver):
             last_evaluated_key = response.get("LastEvaluatedKey")
             if not last_evaluated_key:
                 break  # no more data to paginate
-
+ 
+        logger.debug(f"Filtered items: {len(results)} found for thread_id: {thread_id}, checkpoint_key_prefix: {checkpoint_key_prefix}")
+        # Sort results by checkpoint_id in descending order
         return results
 
     async def aget(self, config: RunnableConfig) -> Optional[Checkpoint]:
@@ -491,9 +501,12 @@ class DynamoDBSaver(BaseCheckpointSaver):
             None, self.get_tuple, config
         )
 
-    async def alist(self, config: RunnableConfig) -> AsyncIterator[CheckpointTuple]:
+    async def alist(self, config: RunnableConfig,*,  
+                    filter: Optional[Dict[str, Any]] = None,
+                    before: Optional[RunnableConfig] = None,
+                    limit: Optional[int] = None,) -> AsyncIterator[CheckpointTuple]:
         loop = asyncio.get_running_loop()
-        iter = loop.run_in_executor(None, self.list, config)
+        iter = loop.run_in_executor(None, self.list, config,filter=filter, before=before, limit=limit)
         while True:
             try:
                 yield await loop.run_in_executor(None, next, iter)
@@ -501,8 +514,16 @@ class DynamoDBSaver(BaseCheckpointSaver):
                 return
 
     async def aput(
-        self, config: RunnableConfig, checkpoint: Checkpoint
+        self, config: RunnableConfig, checkpoint: Checkpoint, metadata: CheckpointMetadata,new_versions: ChannelVersions
     ) -> RunnableConfig:
         return await asyncio.get_running_loop().run_in_executor(
-            None, self.put, config, checkpoint
+            None, self.put, config, checkpoint, metadata, new_versions
         )
+
+    async def aput_writes(
+        self, config: RunnableConfig, writes: List[Tuple[str, Any]], task_id: str
+    ) -> None:
+        await asyncio.get_running_loop().run_in_executor(
+            None, self.put_writes, config, writes, task_id
+        )
+ 

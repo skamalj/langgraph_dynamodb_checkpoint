@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "langgraph_dynamodb_checkpoint"
-version = "0.2.6"
+version = "0.2.6.1"
 description = "DynamoDB checkpoint saver implementation for LangGraph - Single table, auto create with delete handling"
 authors = [{name = "Kamal", email = "skamalj@github.com"}]
 readme = "README.md"

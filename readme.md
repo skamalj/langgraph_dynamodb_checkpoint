@@ -1,6 +1,7 @@
 # LangGraph DynamoDB Checkpoint Saver
 
 A DynamoDB-based checkpoint saver implementation for LangGraph that allows storing and managing checkpoints in Amazon DynamoDB.
+* Supports both Sync and async methods
 
 ## Installation
 ### If installing this version, then delete the underlying table as well. Existing data is not compatible with version >= 1.5
@@ -22,6 +23,57 @@ pip install langgraph_dynamodb_checkpoint
 ```
 from langgraph_dynamodb_checkpoint import DynamoDBSaver
 ```
+
+
+### 🔍 Enable Logging
+
+`langgraph_dynamodb` uses Python's standard `logging` module and emits logs under the logger name `langgraph_dynamodb`.
+
+You can control logging verbosity using the `LANGGRAPH_DYNAMODB_LOG_LEVEL` environment variable:
+
+```bash
+export LANGGRAPH_DYNAMODB_LOG_LEVEL=DEBUG
+```
+
+#### Available log levels:
+
+* `CRITICAL`
+* `ERROR`
+* `WARNING`
+* `INFO` (default)
+* `DEBUG`
+* `NOTSET`
+
+#### Example:
+
+```bash
+LANGGRAPH_DYNAMODB_LOG_LEVEL=DEBUG 
+```
+
+---
+
+### ⚙️ Programmatic Logging Configuration (Optional)
+
+You can also configure logging directly in your code using `configure_logging`:
+
+```python
+from langgraph_dynamodb_checkpoint import configure_logging
+import logging
+
+configure_logging(
+    level=logging.DEBUG,
+    log_format="%(levelname)s: %(message)s"
+)
+```
+
+Redirect logs to a file:
+
+```python
+with open("log.txt", "a") as logfile:
+    configure_logging(level=logging.INFO, stream=logfile)
+```
+
+This gives you full control over the log destination, level, and format.
 
 # Initialize the saver with a table name
 ```
