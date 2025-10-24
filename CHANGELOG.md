@@ -1,6 +1,10 @@
 # Changelog
 
-All notable changes to this project will be documented in this file.
+All changes to this project will be documented in this file.
+
+## [0.2.6.4]
+### Changed
+- Compatibility with langgraph 1.0.1
 
 ## [0.2.6.2]
 ### Changed

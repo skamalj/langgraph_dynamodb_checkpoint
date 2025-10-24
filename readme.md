@@ -2,6 +2,10 @@
 
 A DynamoDB-based checkpoint saver implementation for LangGraph that allows storing and managing checkpoints in Amazon DynamoDB.
 * Supports both Sync and async methods
+* Single table Implementation
+* Supports delete basis given thread_id
+* Supports logging - Multiple Log levels
+* Supports  Class and Context Manager initialization
 
 ## Installation
 ### If installing this version, then delete the underlying table as well. Existing data is not compatible with version >= 1.5

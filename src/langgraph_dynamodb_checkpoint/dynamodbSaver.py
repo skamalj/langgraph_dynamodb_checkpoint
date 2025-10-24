@@ -111,7 +111,7 @@ def _parse_dynamodb_checkpoint_data(serde: DynamoDBSerializer, key: str, data: d
     }
 
     checkpoint = serde.loads_typed((data["type"], data["checkpoint"]))
-    metadata = serde.loads(data["metadata"])
+    metadata = serde.loads_typed(data["metadata"])
     parent_checkpoint_id = data.get("parent_checkpoint_id", "")
     parent_config = (
         {
@@ -220,7 +220,7 @@ class DynamoDBSaver(BaseCheckpointSaver):
         key = _make_dynamodb_checkpoint_key(thread_id, checkpoint_ns, checkpoint_id)
 
         type_, serialized_checkpoint = self.dynamodb_serde.dumps_typed(checkpoint)
-        serialized_metadata = self.dynamodb_serde.dumps(metadata)
+        serialized_metadata = self.dynamodb_serde.dumps_typed(metadata)
 
         data = {
             "PK": thread_id,
