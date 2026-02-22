@@ -222,9 +222,10 @@ class DynamoDBSaver(BaseCheckpointSaver):
         type_, serialized_checkpoint = self.dynamodb_serde.dumps_typed(checkpoint)
         serialized_metadata = self.dynamodb_serde.dumps_typed(metadata)
 
+        sk = DYNAMODB_KEY_SEPARATOR.join([checkpoint_ns, checkpoint_id]) if checkpoint_ns else checkpoint_id
         data = {
             "PK": thread_id,
-            "SK": checkpoint_id,
+            "SK": sk,
             "checkpoint_key": key,
             "checkpoint": serialized_checkpoint,
             "type": type_,
@@ -267,9 +268,8 @@ class DynamoDBSaver(BaseCheckpointSaver):
                 WRITES_IDX_MAP.get(channel, idx),
             )
             type_, serialized_value = self.dynamodb_serde.dumps_typed(value)
-            SK = DYNAMODB_KEY_SEPARATOR.join([
-                checkpoint_id, task_id
-            ])
+            sk_parts = [checkpoint_ns, checkpoint_id, task_id] if checkpoint_ns else [checkpoint_id, task_id]
+            SK = DYNAMODB_KEY_SEPARATOR.join(sk_parts)
             data = {"PK": thread_id,"SK": SK, "checkpoint_key": key, "channel": channel, "type": type_, "value": serialized_value}
             
             if self.ttl_seconds:
@@ -350,7 +350,8 @@ class DynamoDBSaver(BaseCheckpointSaver):
         
         checkpoint_id = _parse_dynamodb_checkpoint_key(checkpoint_key)["checkpoint_id"]
         logger.debug(f"Checkpoint key: {checkpoint_key}, checkpoint_id: {checkpoint_id}")
-        response = self.table.get_item(Key={"PK": thread_id, "SK": checkpoint_id}, ConsistentRead=True)
+        sk = DYNAMODB_KEY_SEPARATOR.join([checkpoint_ns, checkpoint_id]) if checkpoint_ns else checkpoint_id
+        response = self.table.get_item(Key={"PK": thread_id, "SK": sk}, ConsistentRead=True)
         checkpoint_data = response.get('Item', {})
 
         # load pending writes
@@ -385,7 +386,7 @@ class DynamoDBSaver(BaseCheckpointSaver):
         pattern = _make_dynamodb_checkpoint_key(thread_id, checkpoint_ns, "*")
 
         checkpoint_key = DYNAMODB_KEY_SEPARATOR.join([
-            "checkpoint", thread_id, checkpoint_ns
+            "checkpoint", thread_id, checkpoint_ns, ""
             ])
         
         items = self.table.query(
@@ -411,7 +412,7 @@ class DynamoDBSaver(BaseCheckpointSaver):
     def _load_pending_writes(self, thread_id: str, checkpoint_ns: str, checkpoint_id: str) -> List[PendingWrite]:
         
         writes_key = DYNAMODB_KEY_SEPARATOR.join([
-            "writes", thread_id, checkpoint_ns, checkpoint_id
+            "writes", thread_id, checkpoint_ns, checkpoint_id, ""
         ])
 
 
@@ -442,7 +443,7 @@ class DynamoDBSaver(BaseCheckpointSaver):
             return _make_dynamodb_checkpoint_key(thread_id, checkpoint_ns, checkpoint_id)
         
         checkpoint_key = DYNAMODB_KEY_SEPARATOR.join([
-        "checkpoint", thread_id, checkpoint_ns
+        "checkpoint", thread_id, checkpoint_ns, ""
         ])
 
         all_keys = self._get_filtered_items(thread_id, checkpoint_key)
