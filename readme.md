@@ -1,16 +1,30 @@
 # LangGraph DynamoDB Checkpoint Saver
 
 A DynamoDB-based checkpoint saver implementation for LangGraph that allows storing and managing checkpoints in Amazon DynamoDB.
+
+**What makes this checkpointer different:** it has message history pruning built in. Pass a `MessageReducer` and the checkpointer automatically caps your message list before writing to DynamoDB — no extra code in your graph, no state annotation changes required.
+
 * Supports both Sync and async methods
 * Single table Implementation
+* **Built-in message pruning** via [agentstate-reducer](https://pypi.org/project/agentstate-reducer/) (optional)
 * Supports delete basis given thread_id
+* Supports TTL-based expiry
 * Supports logging - Multiple Log levels
 * Supports  Class and Context Manager initialization
 
 ## Installation
-### If installing this version, then delete the underlying table as well. Existing data is not compatible with version >= 1.5
-bash
+
+```bash
 pip install langgraph_dynamodb_checkpoint
+```
+
+With optional message pruning support:
+
+```bash
+pip install "langgraph_dynamodb_checkpoint[reducer]"
+```
+
+**Requires Python 3.10+**
 
 
 ## Usage
@@ -18,9 +32,11 @@ pip install langgraph_dynamodb_checkpoint
 ### DynamoDBSaver Constructor
 
 - `table_name` (str): Name of the DynamoDB table to use for storing checkpoints
-- `max_read_request_units` (int, optional): Maximum read request units for the DynamoDB table. Defaults to 10
-- `max_write_request_units` (int, optional): Maximum write request units for the DynamoDB table. Defaults to 10
+- `max_read_request_units` (int, optional): Maximum read request units for the DynamoDB table. Defaults to 100
+- `max_write_request_units` (int, optional): Maximum write request units for the DynamoDB table. Defaults to 100
 - `ttl_seconds` (int, optional): TTL value set for all checkpoint items.
+- `reducer` (MessageReducer, optional): Prunes the message history before each checkpoint is stored. See [Built-in Message Pruning](#built-in-message-pruning).
+- `messages_key` (str, optional): State channel that holds the message list. Defaults to `"messages"`.
 
 ### Import
 
@@ -124,6 +140,58 @@ Ensure you have proper AWS credentials configured either through:
 The AWS credentials should have permissions to:
 - Create DynamoDB tables (if table doesn't exist)
 - Read and write to DynamoDB tables
+
+## Built-in Message Pruning
+
+Long-running agents accumulate message history with every turn. Left unchecked this inflates checkpoint size, increases DynamoDB storage/throughput cost, and eventually blows past LLM context limits.
+
+This checkpointer solves that at the persistence layer: pass a `MessageReducer` and it automatically prunes the message list inside `put()` before the checkpoint is serialised and written to DynamoDB. **Your graph code, state definition, and node logic stay untouched.**
+
+This is an alternative to — or complement of — the LangGraph `Annotated[list, reducer_fn]` pattern. Use the checkpoint-layer approach when:
+
+- You don't own the graph or state definition (e.g. using a pre-built LangGraph agent)
+- You want pruning to happen unconditionally at every save
+- You want to keep all in-memory state intact and only prune what gets persisted
+
+### Install with reducer support
+
+```bash
+pip install "langgraph_dynamodb_checkpoint[reducer]"
+```
+
+### Usage — message-count pruning
+
+```python
+from agentstate_reducer import MessageReducer
+from langgraph_dynamodb_checkpoint import DynamoDBSaver
+
+reducer = MessageReducer(min_messages=10, max_messages=20)
+
+saver = DynamoDBSaver(
+    table_name="your-table",
+    reducer=reducer,          # prune before each checkpoint save
+    messages_key="messages",  # state channel holding the message list (default)
+)
+```
+
+### Usage — token-budget pruning
+
+```python
+from agentstate_reducer import MessageReducer, ReducerConfig
+from langgraph_dynamodb_checkpoint import DynamoDBSaver
+
+# Prune when the conversation exceeds 4000 tokens, down to ~2000 — whole messages only, never truncated
+reducer = MessageReducer(config=ReducerConfig(max_tokens=4000, target_tokens=2000))
+saver = DynamoDBSaver(table_name="your-table", reducer=reducer)
+```
+
+When pruning triggers, the oldest `human`/`ai` messages are removed until the target is met. The following are **never** pruned:
+
+- Index 0 (typically the system prompt) — controlled by `preserve_first=True`
+- `system` and `function` messages
+- `tool` messages — unless their parent `ai` message is pruned (cascade behaviour, configurable)
+
+See [agentstate-reducer on PyPI](https://pypi.org/project/agentstate-reducer/) for full configuration: message-count vs token-budget modes, `preserve_first`, `cascade_tool_messages`, `summarize_fn`, and role alias support (`user`/`assistant`/`agent`).
 
 ## Notes
 

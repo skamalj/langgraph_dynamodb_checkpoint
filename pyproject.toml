@@ -4,30 +4,46 @@ build-backend = "hatchling.build"
 
 [project]
 name = "langgraph_dynamodb_checkpoint"
-version = "0.2.6.4"
-description = "DynamoDB checkpoint saver implementation for LangGraph - Single table, auto create with delete handling"
+version = "0.3.0"
+description = "LangGraph checkpoint saver for Amazon DynamoDB with built-in message history pruning via agentstate-reducer - single table, auto create, TTL and delete handling"
 authors = [{name = "Kamal", email = "skamalj@github.com"}]
 readme = "README.md"
-requires-python = ">=3.9"
+requires-python = ">=3.10"
 dependencies = [
     "langchain-core",
     "langgraph",
     "boto3",
     "botocore"
 ]
+keywords = [
+    "langgraph", "checkpoint", "dynamodb", "aws",
+    "message-reducer", "agent-state", "memory", "langchain"
+]
 classifiers = [
     "Programming Language :: Python :: 3",
     "License :: OSI Approved :: MIT License",
     "Operating System :: OS Independent",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
 
 [project.optional-dependencies]
+reducer = [
+    "agentstate-reducer>=0.1.1",
+]
 dev = [
     "pytest>=7.0",
     "pytest-cov",
     "black",
     "isort",
     "mypy"
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=7.0",
+    "pytest-cov",
+    "langchain-openai",
+    "langgraph_dynamodb_checkpoint[reducer]",
 ]
 
 [tool.hatch.build.targets.wheel]

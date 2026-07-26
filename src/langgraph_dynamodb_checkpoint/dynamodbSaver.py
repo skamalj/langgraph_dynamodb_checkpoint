@@ -1,3 +1,4 @@
+import copy
 from contextlib import  contextmanager
 from typing import Any, Iterator, List, Optional, Tuple, AsyncIterator, Dict
 from langchain_core.runnables import RunnableConfig
@@ -138,12 +139,34 @@ class DynamoDBSaver(BaseCheckpointSaver):
 
     table: Any
 
-    def __init__(self, table_name: str,  max_read_request_units: int = 100, max_write_request_units: int = 100, ttl_seconds: int = None) -> None:
+    def __init__(self, table_name: str,  max_read_request_units: int = 100, max_write_request_units: int = 100, ttl_seconds: int = None, reducer=None, messages_key: str = "messages") -> None:
         super().__init__()
         self.dynamodb = boto3.resource('dynamodb')
         self.dynamodb_serde = DynamoDBSerializer(self.serde)
         self.ttl_seconds = ttl_seconds  # Time to live in seconds (default: 24 hours)
+        self.reducer = reducer
+        self.messages_key = messages_key
         self.table = self._get_or_create_table(table_name, max_read_request_units,max_write_request_units)
+
+    def _apply_reducer(self, checkpoint: Checkpoint) -> Checkpoint:
+        """Prune the message list in the checkpoint before persistence, if a reducer is configured.
+
+        Non-mutating: returns a shallow copy of the checkpoint with a reduced
+        message list. When no reducer is set (or there are no messages), the
+        original checkpoint is returned unchanged.
+        """
+        if self.reducer is None:
+            return checkpoint
+        channel_values = checkpoint.get("channel_values", {})
+        messages = channel_values.get(self.messages_key)
+        if not messages:
+            return checkpoint
+        result = self.reducer.reduce(existing=messages, new=[])
+        new_channel_values = dict(channel_values)
+        new_channel_values[self.messages_key] = result.surviving
+        new_checkpoint = copy.copy(checkpoint)
+        new_checkpoint["channel_values"] = new_channel_values
+        return new_checkpoint
 
     def _get_or_create_table(self, table_name: str, max_read_request_units: int, max_write_request_units: int):
         try:
@@ -193,10 +216,10 @@ class DynamoDBSaver(BaseCheckpointSaver):
 
     @classmethod
     @contextmanager
-    def from_conn_info(cls, *, table_name: str, max_read_request_units: int = 100, max_write_request_units: int = 100, ttl_seconds: int = None) -> Iterator["DynamoDBSaver"]:
+    def from_conn_info(cls, *, table_name: str, max_read_request_units: int = 100, max_write_request_units: int = 100, ttl_seconds: int = None, reducer=None, messages_key: str = "messages") -> Iterator["DynamoDBSaver"]:
         saver = None
         try:
-            saver = DynamoDBSaver(table_name,max_read_request_units,max_write_request_units, ttl_seconds)
+            saver = DynamoDBSaver(table_name,max_read_request_units,max_write_request_units, ttl_seconds, reducer=reducer, messages_key=messages_key)
             yield saver
         finally:
             pass
@@ -213,6 +236,7 @@ class DynamoDBSaver(BaseCheckpointSaver):
         Returns:
             RunnableConfig: Updated configuration after storing the checkpoint.
         """
+        checkpoint = self._apply_reducer(checkpoint)
         thread_id = config["configurable"]["thread_id"]
         checkpoint_ns = config["configurable"]["checkpoint_ns"]
         checkpoint_id = checkpoint["id"]
