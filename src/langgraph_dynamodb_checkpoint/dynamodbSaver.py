@@ -148,12 +148,33 @@ class DynamoDBSaver(BaseCheckpointSaver):
         self.messages_key = messages_key
         self.table = self._get_or_create_table(table_name, max_read_request_units,max_write_request_units)
 
-    def _apply_reducer(self, checkpoint: Checkpoint) -> Checkpoint:
+    def _memory_namespace(self, config: RunnableConfig):
+        """Resolve the long-term-memory namespace forwarded to reducer ``on_prune`` hooks.
+
+        Looks up ``reducer.config.namespace_key`` (default ``"memory_namespace"``)
+        in ``config["configurable"]``; the app sets it per invoke, e.g.
+        ``{"thread_id": ..., "memory_namespace": ("memories", user_id)}``.
+        Falls back to ``("memories", thread_id)`` so apps that never set it
+        still get per-thread memory. The checkpointer never builds the namespace
+        itself beyond that fallback.
+        """
+        conf = config.get("configurable", {}) if config else {}
+        key = getattr(getattr(self.reducer, "config", None), "namespace_key", "memory_namespace")
+        ns = conf.get(key)
+        if ns is not None:
+            return ns
+        thread_id = conf.get("thread_id")
+        return ("memories", thread_id) if thread_id is not None else None
+
+    def _apply_reducer(self, checkpoint: Checkpoint, config: Optional[RunnableConfig] = None) -> Checkpoint:
         """Prune the message list in the checkpoint before persistence, if a reducer is configured.
 
         Non-mutating: returns a shallow copy of the checkpoint with a reduced
         message list. When no reducer is set (or there are no messages), the
-        original checkpoint is returned unchanged.
+        original checkpoint is returned unchanged. The memory namespace resolved
+        from ``config`` is forwarded to the reducer so ``on_prune`` hooks can
+        write pruned messages to long-term memory (agentstate-reducer >= 0.4.0;
+        older reducers ignore it).
         """
         if self.reducer is None:
             return checkpoint
@@ -161,7 +182,12 @@ class DynamoDBSaver(BaseCheckpointSaver):
         messages = channel_values.get(self.messages_key)
         if not messages:
             return checkpoint
-        result = self.reducer.reduce(existing=messages, new=[])
+        try:
+            result = self.reducer.reduce(
+                existing=messages, new=[], namespace=self._memory_namespace(config)
+            )
+        except TypeError:  # agentstate-reducer < 0.4.0: no namespace kwarg
+            result = self.reducer.reduce(existing=messages, new=[])
         new_channel_values = dict(channel_values)
         new_channel_values[self.messages_key] = result.surviving
         new_checkpoint = copy.copy(checkpoint)
@@ -236,7 +262,7 @@ class DynamoDBSaver(BaseCheckpointSaver):
         Returns:
             RunnableConfig: Updated configuration after storing the checkpoint.
         """
-        checkpoint = self._apply_reducer(checkpoint)
+        checkpoint = self._apply_reducer(checkpoint, config)
         thread_id = config["configurable"]["thread_id"]
         checkpoint_ns = config["configurable"]["checkpoint_ns"]
         checkpoint_id = checkpoint["id"]
