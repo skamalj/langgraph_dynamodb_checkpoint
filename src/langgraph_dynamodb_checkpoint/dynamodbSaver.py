@@ -296,7 +296,7 @@ class DynamoDBSaver(BaseCheckpointSaver):
             }
         }
 
-    def put_writes(self, config: RunnableConfig, writes: List[Tuple[str, Any]], task_id: str) -> None:
+    def put_writes(self, config: RunnableConfig, writes: List[Tuple[str, Any]], task_id: str, task_path: str = "") -> None:
         """Store intermediate writes linked to a checkpoint.
 
         Args:
@@ -317,10 +317,13 @@ class DynamoDBSaver(BaseCheckpointSaver):
                 WRITES_IDX_MAP.get(channel, idx),
             )
             type_, serialized_value = self.dynamodb_serde.dumps_typed(value)
+            # One item per write: the sort key must include the write index, otherwise
+            # every write of a task overwrites the previous one.
             SK = DYNAMODB_KEY_SEPARATOR.join([
-                checkpoint_id, task_id
+                checkpoint_id, task_id, str(WRITES_IDX_MAP.get(channel, idx))
             ])
-            data = {"PK": thread_id,"SK": SK, "checkpoint_key": key, "channel": channel, "type": type_, "value": serialized_value}
+            data = {"PK": thread_id,"SK": SK, "checkpoint_key": key, "channel": channel, "type": type_,
+                    "value": serialized_value, "task_path": task_path}
             
             if self.ttl_seconds:
                 data["ttl"] = int(time.time()) + self.ttl_seconds
@@ -438,25 +441,51 @@ class DynamoDBSaver(BaseCheckpointSaver):
             "checkpoint", thread_id, checkpoint_ns
             ])
         
-        items = self.table.query(
+        # Paginate the whole partition: DynamoDB's Limit applies before FilterExpression,
+        # so it cannot be used to cap *matching* checkpoints. Filters, `before` and
+        # `limit` are applied here.
+        before_id = get_checkpoint_id(before) if before else None
+        kwargs = dict(
             KeyConditionExpression=Key('PK').eq(thread_id),
-            FilterExpression=Key('checkpoint_key').begins_with(checkpoint_key),
+            FilterExpression=Key('checkpoint_key').begins_with(checkpoint_key + DYNAMODB_KEY_SEPARATOR),
             ScanIndexForward=False,
-            Limit=limit if limit else 0)["Items"]
-        
-        for data in items:
-            if data and "checkpoint" in data and "metadata" in data:
-                # load pending writes
+        )
+        yielded = 0
+        while True:
+            resp = self.table.query(**kwargs)
+            for data in resp.get("Items", []):
+                if not (data and "checkpoint" in data and "metadata" in data):
+                    continue
                 key = data["checkpoint_key"]
-                checkpoint_id = _parse_dynamodb_checkpoint_key(key)[
-                    "checkpoint_id"
-                ]
-                pending_writes = self._load_pending_writes(
-                    thread_id, checkpoint_ns, checkpoint_id
-                )
-                yield _parse_dynamodb_checkpoint_data(
+                parsed = _parse_dynamodb_checkpoint_key(key)
+                if parsed.get("checkpoint_ns", checkpoint_ns) != checkpoint_ns:
+                    continue
+                checkpoint_id = parsed["checkpoint_id"]
+                if before_id is not None and checkpoint_id >= before_id:
+                    continue
+                pending_writes = self._load_pending_writes(thread_id, checkpoint_ns, checkpoint_id)
+                tup = _parse_dynamodb_checkpoint_data(
                     self.dynamodb_serde, key, data, pending_writes=pending_writes
                 )
+                if tup is None:
+                    continue
+                if filter and not all(tup.metadata.get(k) == v for k, v in filter.items()):
+                    continue
+                yield tup
+                yielded += 1
+                if limit is not None and yielded >= limit:
+                    return
+            lek = resp.get("LastEvaluatedKey")
+            if not lek:
+                return
+            kwargs["ExclusiveStartKey"] = lek
+
+    def delete_thread(self, thread_id: str) -> None:
+        """Delete all checkpoints and writes for a thread (LangGraph BaseCheckpointSaver API)."""
+        self.delete({"configurable": {"thread_id": thread_id}})
+
+    async def adelete_thread(self, thread_id: str) -> None:
+        await asyncio.get_running_loop().run_in_executor(None, self.delete_thread, thread_id)
 
     def _load_pending_writes(self, thread_id: str, checkpoint_ns: str, checkpoint_id: str) -> List[PendingWrite]:
         
@@ -551,17 +580,16 @@ class DynamoDBSaver(BaseCheckpointSaver):
             None, self.get_tuple, config
         )
 
-    async def alist(self, config: RunnableConfig,*,  
+    async def alist(self, config: Optional[RunnableConfig], *,
                     filter: Optional[Dict[str, Any]] = None,
                     before: Optional[RunnableConfig] = None,
-                    limit: Optional[int] = None,) -> AsyncIterator[CheckpointTuple]:
+                    limit: Optional[int] = None) -> AsyncIterator[CheckpointTuple]:
         loop = asyncio.get_running_loop()
-        iter = loop.run_in_executor(None, self.list, config,filter=filter, before=before, limit=limit)
-        while True:
-            try:
-                yield await loop.run_in_executor(None, next, iter)
-            except StopIteration:
-                return
+        items = await loop.run_in_executor(
+            None, lambda: list(self.list(config, filter=filter, before=before, limit=limit))
+        )
+        for item in items:
+            yield item
 
     async def aput(
         self, config: RunnableConfig, checkpoint: Checkpoint, metadata: CheckpointMetadata,new_versions: ChannelVersions
@@ -571,9 +599,9 @@ class DynamoDBSaver(BaseCheckpointSaver):
         )
 
     async def aput_writes(
-        self, config: RunnableConfig, writes: List[Tuple[str, Any]], task_id: str
+        self, config: RunnableConfig, writes: List[Tuple[str, Any]], task_id: str, task_path: str = ""
     ) -> None:
         await asyncio.get_running_loop().run_in_executor(
-            None, self.put_writes, config, writes, task_id
+            None, self.put_writes, config, writes, task_id, task_path
         )
  
