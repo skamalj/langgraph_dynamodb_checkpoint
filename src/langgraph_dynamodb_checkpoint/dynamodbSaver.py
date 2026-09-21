@@ -6,7 +6,7 @@ from langgraph.checkpoint.base import WRITES_IDX_MAP, BaseCheckpointSaver, Chann
 from langgraph_dynamodb_checkpoint.dynamodbSerializer import DynamoDBSerializer
 from langgraph_dynamodb_checkpoint._nudge import nudge_unbounded_history
 import boto3
-from boto3.dynamodb.conditions import Key
+from boto3.dynamodb.conditions import Attr, Key
 from botocore.exceptions import ClientError
 import time
 import asyncio
@@ -287,6 +287,12 @@ class DynamoDBSaver(BaseCheckpointSaver):
             else "",
         }
 
+        # Top-level copy of metadata["run_id"] so delete_for_runs can find the
+        # item with a filter/GSI without deserializing metadata.
+        run_id = metadata.get("run_id") if isinstance(metadata, dict) else None
+        if run_id:
+            data["run_id"] = str(run_id)
+
         if self.ttl_seconds:
             data["ttl"] = int(time.time()) + self.ttl_seconds
 
@@ -489,6 +495,174 @@ class DynamoDBSaver(BaseCheckpointSaver):
 
     async def adelete_thread(self, thread_id: str) -> None:
         await asyncio.get_running_loop().run_in_executor(None, self.delete_thread, thread_id)
+
+    # ------------------------------------------------------------------
+    # Optional LangGraph checkpointer capabilities (copy_thread,
+    # delete_for_runs, prune) and their async variants.
+    # ------------------------------------------------------------------
+
+    def _iter_thread_items(self, thread_id: str) -> Iterator[dict]:
+        """Yield every item (checkpoints and writes) in a thread's partition, paginated."""
+        kwargs = dict(KeyConditionExpression=Key("PK").eq(thread_id), ConsistentRead=True)
+        while True:
+            resp = self.table.query(**kwargs)
+            yield from resp.get("Items", [])
+            lek = resp.get("LastEvaluatedKey")
+            if not lek:
+                return
+            kwargs["ExclusiveStartKey"] = lek
+
+    @staticmethod
+    def _rewrite_thread_in_key(checkpoint_key: str, target_thread_id: str) -> str:
+        """Replace the thread segment (index 1) of a checkpoint/writes key."""
+        parts = checkpoint_key.split(DYNAMODB_KEY_SEPARATOR)
+        parts[1] = target_thread_id
+        return DYNAMODB_KEY_SEPARATOR.join(parts)
+
+    def copy_thread(self, source_thread_id: str, target_thread_id: str) -> None:
+        """Copy every checkpoint and pending write of ``source_thread_id`` to ``target_thread_id``.
+
+        All namespaces are copied; checkpoint ids, parent ids, metadata and
+        write ordering are preserved (only the partition key and the thread
+        segment of ``checkpoint_key`` change). The source thread is left
+        untouched. A nonexistent source is a no-op. Items are copied with a
+        ``batch_writer`` so the copy is not atomic: a failure part-way leaves a
+        partial target thread.
+        """
+        if source_thread_id == target_thread_id:
+            return
+        with self.table.batch_writer() as batch:
+            for item in self._iter_thread_items(source_thread_id):
+                new_item = dict(item)
+                new_item["PK"] = target_thread_id
+                if "checkpoint_key" in new_item:
+                    new_item["checkpoint_key"] = self._rewrite_thread_in_key(
+                        new_item["checkpoint_key"], target_thread_id
+                    )
+                batch.put_item(Item=new_item)
+
+    async def acopy_thread(self, source_thread_id: str, target_thread_id: str) -> None:
+        await asyncio.get_running_loop().run_in_executor(
+            None, self.copy_thread, source_thread_id, target_thread_id
+        )
+
+    def _delete_checkpoint_and_writes(self, batch, thread_id: str, checkpoint_ns: str, checkpoint_id: str) -> None:
+        """Queue deletes for one checkpoint item and all of its write items."""
+        batch.delete_item(Key={"PK": thread_id, "SK": checkpoint_id})
+        writes_prefix = DYNAMODB_KEY_SEPARATOR.join(
+            ["writes", thread_id, checkpoint_ns, checkpoint_id]
+        ) + DYNAMODB_KEY_SEPARATOR
+        kwargs = dict(
+            KeyConditionExpression=Key("PK").eq(thread_id)
+            & Key("SK").begins_with(checkpoint_id + DYNAMODB_KEY_SEPARATOR),
+            FilterExpression=Key("checkpoint_key").begins_with(writes_prefix),
+            ProjectionExpression="PK, SK",
+            ConsistentRead=True,
+        )
+        while True:
+            resp = self.table.query(**kwargs)
+            for w in resp.get("Items", []):
+                batch.delete_item(Key={"PK": w["PK"], "SK": w["SK"]})
+            lek = resp.get("LastEvaluatedKey")
+            if not lek:
+                return
+            kwargs["ExclusiveStartKey"] = lek
+
+    def delete_for_runs(self, run_ids) -> None:
+        """Delete every checkpoint (and its writes) whose metadata ``run_id`` is in ``run_ids``.
+
+        Works across all threads and namespaces. An empty list or unknown run
+        ids is a no-op.
+
+        Lookup: ``put`` stores a top-level ``run_id`` attribute on checkpoint
+        items whenever ``metadata["run_id"]`` is set; this method finds them
+        with a paginated table ``Scan`` filtered on that attribute (the IN list
+        is chunked to DynamoDB's limit of 100 values). Two caveats:
+
+        * Items written by versions of this package that predate the ``run_id``
+          attribute are invisible to this method (their run id lives only inside
+          the serialized ``metadata`` blob).
+        * A full-table scan is O(table size). For production tables the upgrade
+          path is a GSI on ``run_id`` (query instead of scan); the storage
+          layout already carries the attribute needed for it.
+        """
+        run_ids = [r for r in run_ids if r]
+        if not run_ids:
+            return
+        matches: List[dict] = []
+        for start in range(0, len(run_ids), 100):
+            chunk = run_ids[start:start + 100]
+            kwargs = dict(
+                FilterExpression=Attr("run_id").is_in(chunk),
+                ProjectionExpression="PK, SK, checkpoint_key",
+                ConsistentRead=True,
+            )
+            while True:
+                resp = self.table.scan(**kwargs)
+                matches.extend(resp.get("Items", []))
+                lek = resp.get("LastEvaluatedKey")
+                if not lek:
+                    break
+                kwargs["ExclusiveStartKey"] = lek
+        if not matches:
+            return
+        with self.table.batch_writer() as batch:
+            for item in matches:
+                parsed = _parse_dynamodb_checkpoint_key(item["checkpoint_key"])
+                self._delete_checkpoint_and_writes(
+                    batch, item["PK"], parsed["checkpoint_ns"], parsed["checkpoint_id"]
+                )
+
+    async def adelete_for_runs(self, run_ids) -> None:
+        await asyncio.get_running_loop().run_in_executor(
+            None, self.delete_for_runs, list(run_ids)
+        )
+
+    def prune(self, thread_ids, *, strategy: str = "keep_latest") -> None:
+        """Prune checkpoints for the given threads.
+
+        ``strategy="keep_latest"`` keeps, per thread and per namespace, only the
+        checkpoint with the greatest checkpoint id (plus its pending writes) and
+        deletes every other checkpoint and their writes. ``strategy="delete"``
+        removes everything for the thread (``delete_thread``). Any other value
+        raises ``ValueError``. Empty list or unknown threads are a no-op.
+
+        DeltaChannel caveat: this implementation is not delta-aware. A naive
+        ``keep_latest`` drops the intermediate checkpoints and writes that
+        ``DeltaChannel`` reconstruction walks back through, so delta-backed
+        channels on the surviving checkpoint may silently reconstruct as empty.
+        Do not prune threads whose graph uses ``DeltaChannel``.
+        """
+        if strategy not in ("keep_latest", "delete"):
+            raise ValueError(
+                f"Unknown prune strategy: {strategy!r} (expected 'keep_latest' or 'delete')"
+            )
+        for thread_id in thread_ids:
+            if strategy == "delete":
+                self.delete_thread(thread_id)
+                continue
+            latest: Dict[str, str] = {}  # checkpoint_ns -> greatest checkpoint_id
+            seen: List[Tuple[str, str]] = []
+            for item in self._iter_thread_items(thread_id):
+                key = item.get("checkpoint_key", "")
+                if not key.startswith("checkpoint" + DYNAMODB_KEY_SEPARATOR):
+                    continue
+                parsed = _parse_dynamodb_checkpoint_key(key)
+                ns, cid = parsed["checkpoint_ns"], parsed["checkpoint_id"]
+                seen.append((ns, cid))
+                if ns not in latest or cid > latest[ns]:
+                    latest[ns] = cid
+            victims = [(ns, cid) for ns, cid in seen if latest[ns] != cid]
+            if not victims:
+                continue
+            with self.table.batch_writer() as batch:
+                for ns, cid in victims:
+                    self._delete_checkpoint_and_writes(batch, thread_id, ns, cid)
+
+    async def aprune(self, thread_ids, *, strategy: str = "keep_latest") -> None:
+        await asyncio.get_running_loop().run_in_executor(
+            None, lambda: self.prune(list(thread_ids), strategy=strategy)
+        )
 
     def _load_pending_writes(self, thread_id: str, checkpoint_ns: str, checkpoint_id: str) -> List[PendingWrite]:
         
