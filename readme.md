@@ -33,7 +33,7 @@ pip install langgraph-dynamodb-checkpoint     # checkpointer only; history is un
 
 Without `reducer=`, the saver logs one INFO line per process saying so, with the link above. Set `AGENTSTATE_QUIET=1` to silence it.
 
-**Requires Python 3.10+.** Single-table design, TTL expiry, delete by thread, sync and async, subgraphs. Conformance-tested with `langgraph-checkpoint-conformance` (full base suite).
+**Requires Python 3.10+.** Single-table design, TTL expiry, delete by thread, sync and async, subgraphs. Passes **all eight capabilities** of `langgraph-checkpoint-conformance` (base plus `copy_thread`, `delete_for_runs`, `prune`), which is what LangSmith Deployment probes at startup; see [LangSmith Deployment](#langsmith-deployment).
 
 ## Usage
 
@@ -148,6 +148,40 @@ Ensure you have proper AWS credentials configured either through:
 The AWS credentials should have permissions to:
 - Create DynamoDB tables (if table doesn't exist)
 - Read and write to DynamoDB tables
+
+## LangSmith Deployment
+
+LangSmith Deployment (Agent Server) accepts a custom checkpointer through `langgraph.json` and checks its capabilities at startup. This saver implements the full set, so thread forking (`copy_thread`), the rollback multitask strategy (`delete_for_runs`) and history pruning (`prune`) are all available.
+
+```json
+{
+  "dependencies": ["."],
+  "graphs": {"agent": "./src/agent/graph.py:graph"},
+  "checkpointer": {"path": "./src/agent/checkpointer.py:generate_checkpointer"}
+}
+```
+
+```python
+# src/agent/checkpointer.py
+from contextlib import asynccontextmanager
+from agentstate_reducer import MessageReducer, ReducerConfig
+from langgraph_dynamodb_checkpoint import DynamoDBSaver
+
+@asynccontextmanager
+async def generate_checkpointer():
+    reducer = MessageReducer(config=ReducerConfig(max_messages=20))
+    yield DynamoDBSaver("checkpoints", reducer=reducer)
+```
+
+Housekeeping methods, also usable outside the platform:
+
+```python
+saver.prune([thread_id], strategy="keep_latest")   # keep only the newest checkpoint per namespace
+saver.delete_for_runs([run_id])                    # remove everything a run wrote
+saver.copy_thread(thread_id, new_thread_id)        # fork a conversation
+```
+
+`prune` is not `DeltaChannel`-aware; do not use `keep_latest` on threads whose graph uses `DeltaChannel`. `delete_for_runs` finds checkpoints by a `run_id` attribute written since this version; older checkpoints are not matched.
 
 ## Built-in Message Pruning
 
