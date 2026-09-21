@@ -4,6 +4,7 @@ from typing import Any, Iterator, List, Optional, Tuple, AsyncIterator, Dict
 from langchain_core.runnables import RunnableConfig
 from langgraph.checkpoint.base import WRITES_IDX_MAP, BaseCheckpointSaver, ChannelVersions, Checkpoint, CheckpointMetadata, CheckpointTuple, PendingWrite, get_checkpoint_id
 from langgraph_dynamodb_checkpoint.dynamodbSerializer import DynamoDBSerializer
+from langgraph_dynamodb_checkpoint._nudge import nudge_unbounded_history
 import boto3
 from boto3.dynamodb.conditions import Key
 from botocore.exceptions import ClientError
@@ -146,6 +147,8 @@ class DynamoDBSaver(BaseCheckpointSaver):
         self.ttl_seconds = ttl_seconds  # Time to live in seconds (default: 24 hours)
         self.reducer = reducer
         self.messages_key = messages_key
+        if reducer is None:
+            nudge_unbounded_history(logger)
         self.table = self._get_or_create_table(table_name, max_read_request_units,max_write_request_units)
 
     def _memory_namespace(self, config: RunnableConfig):

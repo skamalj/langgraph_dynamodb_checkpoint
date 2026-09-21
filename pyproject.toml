@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "langgraph_dynamodb_checkpoint"
-version = "0.4.1"
+version = "0.4.2"
 description = "LangGraph checkpoint saver for Amazon DynamoDB with built-in message history pruning via agentstate-reducer - single table, auto create, TTL and delete handling"
 authors = [{name = "Kamal", email = "skamalj@github.com"}]
 readme = "README.md"
